@@ -1,4 +1,4 @@
-class InputError(BaseException):
+class LineIndexError(BaseException):
     """Exception raised for errors in the input.
 
     Attributes:

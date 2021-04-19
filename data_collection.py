@@ -20,9 +20,8 @@ class GetRequest:
     def __init__(self, content: requests.models.Response):
         # sort content into body and head
         self.content = content.text.splitlines()  # newline delimited html page
-        self.head = self.tag_scrape(self.content, 'head')[0]  # head
-        self.body = self.tag_scrape(self.content, 'body', start_index=self.head.line_indices[0])[0]  # body
-        self.div = self.tag_scrape(self.content, 'div')
+        self.head = self.tag_search(self.content, 'head')[0]  # page head
+        self.body = self.tag_search(self.content, 'body', start_index=self.head.line_indices[0])[0]  # page body
 
     def __str__(self, line_indices=None, tag_indices=None):
 
@@ -36,7 +35,17 @@ class GetRequest:
 
         return '\n'.join(subcontent)
 
-    def tag_scrape(self, content: list, tag: str, start_index=0, tag_index=0):
+    def tag_search(self, content: list, tag: str, start_index=0, tag_index=0):
+        """
+        returns first html block delimited by specified tag. In the case of nested html blocks of specified tag,
+        order of return will be outside to inside, top to bottom.
+
+        :param content: newline delimited html page content
+        :param tag: tag being searched for (head, div, script, etc)
+        :param start_index: index of starting line for html tag search
+        :param tag_index: index of initial tag on starting line
+        :return: list of GetRequest.Tag instances
+        """
 
         tags = ['<' + tag, '</' + tag + '>']  # open tag, close tag
 
@@ -71,7 +80,7 @@ class GetRequest:
                             state = 1  # in case of nested tags
 
                         else:  # second open tag detected prior to closing tag, recursively call self
-                            subtags = subtags + self.tag_scrape(content, tag, line_index, ls)
+                            subtags = subtags + self.tag_search(content, tag, line_index, ls)
 
                             line_index = subtags[-1].line_indices[1]
                             ls = subtags[-1].tag_indices[1]
@@ -93,12 +102,24 @@ class GetRequest:
             line_index += 1
 
     def tag_scan(self, content: list, tag: str, start_index=0, tag_index=0):
+        """
+        Scan entire newline delimited html text given in content, and return list of every html block wrapped in the
+        specified tag, (head, script, body, div etc.) including nested blocks. Order of return will be first to last,
+        outside to inside.
+
+
+        :param content: newline delimited html page content
+        :param tag: tag being searched for (head, div, script, etc)
+        :param start_index: index of starting line for html tag search
+        :param tag_index: index of initial tag on starting line
+        :return: list of GetRequest.Tag instances
+        """
 
         line_index = start_index
         tagslist = []
         tags = True  # do at least one cycle
         while tags:
-            tags = self.tag_scrape(self.content, tag, line_index, tag_index)
+            tags = self.tag_search(content, tag, line_index, tag_index)
 
             if tags:
                 tagslist = tagslist + tags
@@ -108,11 +129,29 @@ class GetRequest:
         return tagslist
 
     @staticmethod
-    def tag_split(line, tag_index):
+    def tag_split(line: str, tag_index: int):
+        """
+        return nth item in line enclosed in <> braces, where nth item is specified by tag_index
+        :param line: html text string
+        :param tag_index: index of desired tag block
+        :return: str containing nth tag found in line
+        """
         return re.split('(<[^>]*>)', line)[1::2][tag_index:]
 
     class Tag:
+        """
+        Html request text data is only stored in parent class GetRequest.context. Tag subclass defines the line and
+        tag indices for html page sub-elements, such as head and body. Upon call, Tag subclass will slice relevant
+        data from GetRequest.content
+        """
         def __init__(self, parent: super, line_indices: tuple, tag_indices: tuple):
+            """
+            defines the slice limits for the relevant html block
+
+            :param parent: instance of parent class, referenced to collect html text data
+            :param line_indices: start and ending line indices for element block
+            :param tag_indices: indices of first element on first line, and last element on last line of relevant block.
+            """
             self.parent = parent
             self.line_indices = line_indices
             self.tag_indices = tag_indices

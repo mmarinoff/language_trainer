@@ -1,5 +1,5 @@
 import requests
-from errors import LineIndexError
+from errors import TagNotFoundError
 import re
 
 
@@ -9,145 +9,146 @@ class GetRequest:
 
     Attributes
         content: array containing /n delimited get request text content
-        head_text: Tag Subclass containing header line and char indices
-        body_text: Tag Subclass containing body line and char indices
+        head_text: Tag Subclass containing header block indices
+        body_text: Tag Subclass containing body block indices
 
     Methods
         tag_search: return first block bounded by specified tag. If nested tags found, will recurse and return entire
         tree as list.
         tag_scan: exhaustive calling of tag_search. Will return Tag Subclass objects for all
         tag_split: split line by seconds bounded by <> angle brakets and return nth item.
+        table_extract: will extract data from first table in selection and export to pandas Dataframe
     """
     # semi processes requests for ease of processing later
     def __init__(self, content: requests.models.Response):
         # sort content into body and head
-        self.content = content.text.splitlines()  # newline delimited html page
+        self.content = content.text
         self.head = self.tag_search('head')[0]  # page head
-        self.body = self.tag_search('body', start_index=self.head.line_indices[1])[0]  # page body
+        self.body = self.tag_search('body', start=self.head.indices[1])[0]  # page body
 
-    def __str__(self, line_indices=None, tag_indices=None):
+    def __str__(self, indices=(0, None)):
 
-        if line_indices:  # if self.Tag subclass
-            subcontent = self.content[line_indices[0]:line_indices[1]+1]  # slice to tag lines
-            # start line 0 with open tag, end line -1 with close tag
-            if len(subcontent) == 1:
-                subcontent = ["".join(re.split('(<[^>]*>)', subcontent[0])[tag_indices[0]*2+1:tag_indices[1]*2+2])]
+        return self.content[indices[0]:indices[1]]
 
-            else:
-                subcontent[0] = "".join(re.split('(<[^>]*>)', subcontent[0])[tag_indices[0]*2+1:])
-                subcontent[-1] = "".join(re.split('(<[^>]*>)', subcontent[-1])[:tag_indices[1]*2+1])
-        else:
-            subcontent = self.content
-
-        return '\n'.join(subcontent)
-
-    def tag_search(self, tag: str, start_index=0, tag_index=0):
+    def tag_search(self, tag_text: str, start=0, stop=None):
         """
         returns first html block delimited by specified tag. In the case of nested html blocks of specified tag,
         order of return will be outside to inside, top to bottom.
 
-        :param tag: tag being searched for (head, div, script, etc)
-        :param start_index: index of starting line for html tag search
-        :param tag_index: index of initial tag on starting line
+        :param tag_text: tag being searched for (head, div, script, etc)
+        :param start: starting index
+        :param stop: ending index
         :return: list of GetRequest.Tag instances
         """
 
-        tags = ['<' + tag + '[ ,>]', '</' + tag + '>']  # open tag regex, close tag
+        # setup
+        tags = ['<' + tag_text + '[ ,>]', '</' + tag_text + '>']  # open tag regex, close tag
 
-        state = 0  # open tag not detected yet
-        subtags = []
-        line_index = start_index
-        while line_index < len(self.content):
-            line = self.content[line_index]
+        state = 0  # 0 - open tag not found yet /1 - open tag found
+        subtags = []  # list of tags to be returned if recursive
 
-            # check for desired open/close tags in current line
-            tag_detect = [bool(re.search(tag, line)) for tag in tags]
-            if any(tag_detect):  # desired tag detected
-                line_split = re.split('(<[^>]*>)', line)[1::2]  # break line into tags
+        if not stop:
+            stop = len(self.content)
 
-                # if first line, start at tag index, else start at first element in line
-                if line_index == start_index:
-                    ls = tag_index
+        index = start  # starting search index
+        while index < stop:
+            content = self.content[index:stop]
+
+            search_open = re.search(tags[0], content)  # next open tag
+            search_close = re.search(tags[1], content)  # next close tag
+            if search_open and search_open.start() < search_close.start():
+
+                # first open tag encountered
+                if state == 0:
+                    t_start = index + search_open.span()[0]  # save open tag positon
+                    index += search_open.span()[1]  # continue search after tag
+                    state = 1
+
+                # nested open tag discovered, recurse
                 else:
-                    ls = 0
+                    subtags += self.tag_search(tag_text, start=index)
+                    index = subtags[-1].indices[1]  # continue search from end of nested call
 
-                # loop through line sub-elements between <> braces, search for tag
-                while ls < len(line_split):
-                    subline = line_split[ls]
+            elif search_close:
+                if state == 1:
+                    t_end = index + re.search(tags[1], content).span()[1]
+                    tag_instance = self.Tag(self, (t_start, t_end))
 
-                    # open tag detected in subline
-                    if re.search(tags[0], subline):
+                    return [tag_instance] + subtags
+                else:
+                    index = index + search_close.span()[1]
 
-                        if state == 0:  # first open tag detected, store index
-                            start_line_index = line_index
-                            start_tag_index = ls
-                            state = 1  # in case of nested tags
+            else:
+                if state == 0:
+                    return []
+                else:
+                    expression = "tag= '" + tag_text + "'"
+                    message = 'At least one closing tag is missing in the current selection'
+                    raise TagNotFoundError(expression, message)
 
-                        else:  # second open tag detected prior to closing tag, recursively call self
-                            subtags = subtags + self.tag_search(tag, line_index, ls)
-
-                            line_index = subtags[-1].line_indices[1]
-                            ls = subtags[-1].tag_indices[1]
-                            # continue search for closing tag after subtag
-
-                    # close tag detected in line
-                    elif tag_detect[1] and state == 1:  # create Tag class object to store information
-                        end_line_index = line_index
-                        end_tag_index = ls
-                        tag_instance = self.Tag(self, line_indices=(start_line_index, end_line_index),
-                                                tag_indices=(start_tag_index, end_tag_index))
-
-                        if subtags:
-                            return [tag_instance] + subtags
-                        else:
-                            return [tag_instance]
-
-                    ls += 1
-            line_index += 1
-
-    def tag_scan(self, tag: str, start_index=0, tag_index=0):
+    def tag_scan(self, tag_text: str, start=0, stop: int = None):
         """
-        Scan entire newline delimited html text given in content, and return list of every html block wrapped in the
+        Scan entire section of html text given in content, and return list of every html block wrapped in the
         specified tag, (head, script, body, div etc.) including nested blocks. Order of return will be first to last,
         root to leaf.
 
-
-        :param tag: tag being searched for (head, div, script, etc)
-        :param start_index: index of starting line for html tag search
-        :param tag_index: index of initial tag on starting line
+        :param tag_text: tag being searched for ('head', 'div', 'script', etc)
+        :param start: starting index
+        :param stop: ending index
         :return: list of GetRequest.Tag instances
         """
 
-        line_index = start_index
-        tagslist = []
-        tags = True  # do at least one cycle
-        while tags:
-            tags = self.tag_search(tag, line_index, tag_index)
+        tagslist = []  # list of Tag subclass to return
+        index = start  # starting search index
+        if not stop:
+            stop = len(self.content)
 
-            if tags:  # tags returns non empty list
-                tagslist += tags
-                tag_index = tags[0].tag_indices[1]+1  # continue scan from last line of root tag (
-                line_index = tags[0].line_indices[1]  # continue from last tag of root tag
+        while index < stop:
+            ntags = self.tag_search(tag_text, index, stop)
+            if ntags:
+                tagslist += ntags
+                index = tagslist[-1].indices[1]
+            else:
 
-        return tagslist
+                if tagslist:
+                    return tagslist
 
-    def table_search(self, start_index=0, tag_index=0):
-        # head = self.tag_search('thead', start_index=start_index, tag_index=tag_index)[0]
-        # body = self.tag_search('tbody', start_index=head.line_indices[1], tag_index=head.tag_indices[0])[0]
-        headers = self.tag_scan('th', start_index=284)
+                else:
+                    expression = "tag= '" + tag_text + "'"
+                    message = 'No instances of tag found in selection'
+                    raise TagNotFoundError(expression, message)
+
+    def table_extract(self, start_index=0, tag_index=0):
+        headers = self.tag_scan('th', start_index=start_index)
+
+        table_headers = []
         for header in headers:
-            print(header)
+            table_headers.append(self.tag_split(header.content)[2])
 
+        table_body = []
+        body = self.tag_scan('tr', start_index=header.line_indices[1], tag_index=tag_index)
+        for row_block in body:
+            table_row = []
+            row = self.tag_scan('td', start_index=row_block.line_indices[0], tag_index=row_block.tag_indices[0])
+
+            for cell in row:
+                selection = "".join(cell.content.splitlines())
+                table_row.append(re.search('>[^<>]+<', selection).group(0)[1:-1])
+
+            table_body.append(table_row)
+
+        print(table_body)
+        input('stop')
 
     @staticmethod
-    def tag_split(line: str, tag_index: int):
+    def tag_split(line: str, tag_index=0):
         """
         return nth item in line enclosed in <> braces, where nth item is specified by tag_index
         :param line: html text string
         :param tag_index: index of desired tag block
         :return: str containing nth tag found in line
         """
-        return re.split('(<[^>]*>)', line)[1::2][tag_index:]
+        return re.split('(<[^>]*>)', line)
 
     class Tag:
         """
@@ -155,29 +156,31 @@ class GetRequest:
         tag indices for html page sub-elements, such as head and body. Upon call, Tag subclass will slice relevant
         data from GetRequest.content
         """
-        def __init__(self, parent: super, line_indices: tuple, tag_indices: tuple):
+        def __init__(self, parent, indices: tuple):
             """
             defines the slice limits for the relevant html block
 
             :param parent: instance of parent class, referenced to collect html text data
-            :param line_indices: start and ending line indices for element block
-            :param tag_indices: indices of first element on first line, and last element on last line of relevant block.
+            :param indices: start and ending line indices for element block
             """
-            self.parent = parent
-            self.line_indices = line_indices
-            self.tag_indices = tag_indices
+            self.__parent__ = parent
+            self.indices = indices
 
         def __str__(self):
-            return self.parent.__str__(self.line_indices, self.tag_indices)
+            return self.__parent__.__str__(self.indices)
+
+        @property
+        def content(self):
+            return self.__parent__.__str__(self.indices)
 
 
 def data_scrape():
     # import list of most common verbs
     r = requests.get('https://www.linguasorb.com/french/verbs/most-common-verbs/')
     gr = GetRequest(r)
-    print(len(gr.tag_scan('div')))
-    input('stop')
-    gr.table_search()
+    div = gr.tag_scan('div')
+
+    # gr.table_extract(start_index=284)
 
 
 if __name__ == '__main__':

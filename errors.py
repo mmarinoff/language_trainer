@@ -1,5 +1,6 @@
-class LineIndexError(BaseException):
-    """Exception raised for errors in the input.
+class TagNotFoundError(BaseException):
+    """Exception raised if no open tag of selected type is found in the current selection, or at least one
+    closing tag is missing.
 
     Attributes:
         expression -- input expression in which the error occurred
